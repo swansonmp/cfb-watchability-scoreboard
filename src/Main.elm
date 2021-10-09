@@ -8,12 +8,14 @@ module Main exposing (..)
 
 import Browser
 import Debug exposing (toString)
-import Html exposing (Html, div, h1, i, img, math, pre, table, td, text, th, tr)
+import Html exposing (Html, blockquote, code, div, h1, i, img, math, pre, strong, table, td, text, th, tr)
 import Html.Attributes exposing (height, src, style, width)
 import Http
 import Json.Decode exposing (Decoder, field, string, int, float, bool, list, map, map2, map4, map7, map8, nullable, succeed)
 import Json.Decode.Pipeline exposing (hardcoded, optional, required)
 import List exposing (concat, drop, head)
+import Svg exposing (rect, svg)
+import Svg.Attributes exposing (color, fill, rx, ry, viewBox, x, y)
 
 
 -- MAIN
@@ -49,6 +51,7 @@ type alias Competition =
     , situation : Maybe Situation
     , status : Status
     , broadcasts : Broadcasts
+    , odds : Maybe Odds
     }
 
 type alias Competitors = List Competitor
@@ -87,11 +90,11 @@ type alias Situation =
     , down : Int
     , yardLine : Int
     , distance : Int
-    , possessionText : String
+    , possessionText : Maybe String
     , isRedZone : Bool
     , homeTimeouts : Int
     , awayTimeouts : Int
-    , possession : String
+    , possession : Maybe String
     }
 
 type alias LastPlay =
@@ -124,6 +127,12 @@ type alias Broadcast =
     { market : String
     , names : List String
     }
+
+type alias Odds =
+    { details : String
+    , overUnder : Float
+    }
+    
 
 -- MODEL/DATA/UTIL
 
@@ -221,12 +230,16 @@ second xs = head (drop 1 xs)
 
 init : () -> (Model, Cmd Msg)
 init _ =
-    ( Loading
-    , Http.get
-        { url = "http://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-        , expect = Http.expectJson GotResponse responseDecoder
-        }
-    )
+    let
+        url = "http://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+        --url = "./broken-scoreboard.json"
+    in
+        ( Loading
+        , Http.get
+            { url = url
+            , expect = Http.expectJson GotResponse responseDecoder
+            }
+        )
 
 responseDecoder : Decoder Response
 responseDecoder = field "events" eventsDecoder
@@ -244,6 +257,7 @@ competitionDecoder =
         |> optional "situation" (map Just situationDecoder) Nothing
         |> required "status" statusDecoder
         |> required "broadcasts" broadcastsDecoder
+        |> optional "odds" oddsDecoder Nothing
 
 competitorsDecoder : Decoder Competitors
 competitorsDecoder = list competitorDecoder
@@ -291,11 +305,11 @@ situationDecoder =
         |> required "down" int
         |> required "yardLine" int
         |> required "distance" int
-        |> required "possessionText" string
+        |> optional "possessionText" (map Just string) Nothing
         |> required "isRedZone" bool
         |> required "homeTimeouts" int
         |> required "awayTimeouts" int
-        |> required "possession" string
+        |> optional "possession" (map Just string) Nothing
 
 lastPlayDecoder : Decoder LastPlay
 lastPlayDecoder =
@@ -334,6 +348,15 @@ broadcastDecoder =
         (field "market" string)
         (field "names" (list string))
 
+oddsDecoder : Decoder (Maybe Odds)
+oddsDecoder =
+    map
+        head
+        (list
+            (map2 Odds
+                (field "details" string)
+                (field "overUnder" float)
+            ))
 
 -- UPDATE
 
@@ -376,142 +399,220 @@ view : Model -> Html Msg
 view model =
     case model of
         Failure errorTypeString errorMsg ->
-            text errorMsg
+            errorPage errorTypeString errorMsg
         Loading ->
-            text "Loading..."
+            div pageBackground [strong [foregroundColor, monospace] [text "Loading..."]]
         Success response ->
-            div [] (
-                [h1 [] [text "CFB Watchability Scoreboard"]] ++
+            div pageBackground (
+                [h1 [foregroundColor, monospace] [text "CFB Watchability Scoreboard"]] ++
                 (List.map makeTable (concat response))
             )
 
+
+-- VIEW/FAILURE
+
+errorPage : String -> String -> Html Msg
+errorPage errorTypeString errorMsg =
+    div
+        (pageBackground ++ [padding 12])
+        [ strong
+            [foregroundColor, monospace]
+            [text "Oops, I'm having trouble showing the scoreboard. Here is the error:"]
+        , div
+            errorDivStyle
+            [blockquote errorTextStyle [code [] [text errorMsg]]]
+        ]
+
+
+-- VIEW/SUCCESS
+
 makeTable : Competition -> Html Msg
 makeTable competition =
-    div [] [
-        table tableStyle ([
-            tr []
-                [ makeTeamTable competition
-                , makeScoreTable competition
-                , makeProbabilityTable competition
-                , makeWatchabilityTable competition
-                ]
-                --[ makeHeaderRow competition,
-                --, makeCompetitorRow competition firstCompetitor,
-                --, makeCompetitorRow competition secondCompetitor
-        ])
-    ]
+    div
+        [padding 12]
+        [
+            table tableStyle ([
+                tr []
+                    [ td [] [makeTeamTable competition]
+                    , td [] [makeScoreTable competition]
+                    , td [] [makeProbabilityTable competition]
+                    , td [] [makeWatchabilityTable competition]
+                    ]
+            ])
+        ]
 
 makeTeamTable : Competition -> Html Msg
 makeTeamTable competition =
     table []
         [ makeTeamTableHeader competition
-        , makeTeamTableData competition (getFirstCompetitor competition)
-        , makeTeamTableData competition (getSecondCompetitor competition)
+        , table []
+            [ makeTeamTableData competition (getFirstCompetitor competition)
+            , makeTeamTableData competition (getSecondCompetitor competition)
+            ]
         ]
 
 makeTeamTableHeader : Competition -> Html Msg
 makeTeamTableHeader competition =
     tr [] [
-        table [] [text competition.status.type_.shortDetail]
+        th [foregroundColor] [text competition.status.type_.shortDetail]
     ]
 
 makeTeamTableData : Competition -> Competitor -> Html Msg
 makeTeamTableData competition competitor =
     tr []
-        [ td [] [img [src competitor.team.logo, height 50, width 50] []]
-        , td [] [text competitor.team.abbreviation]
+        [ td ([secondaryBackground] ++ backgroundColorBorder) [img [src competitor.team.logo, height 50, width 50] []]
+        , td
+            [foregroundColor]
+            [text (getCuratedRankString competitor.curatedRank), text " ", strong [] [text competitor.team.abbreviation]]
         ]
+
+getCompetitorPrimaryHexCode : Competitor -> String
+getCompetitorPrimaryHexCode competitor = "#" ++ competitor.team.color
+
+getCompetitorSecondaryHexCode : Competitor -> String
+getCompetitorSecondaryHexCode competitor = "#" ++ competitor.team.alternateColor
+
+getCuratedRankString : CuratedRank -> String
+getCuratedRankString curatedRank =
+    case curatedRank of
+        Just rank ->
+            Debug.toString rank
+        Nothing ->
+            ""
 
 makeScoreTable : Competition -> Html Msg
 makeScoreTable competition =
-    table []
-        [ makeScoreTableHeader competition
-        , makeScoreTableData competition (getFirstCompetitor competition)
-        , makeScoreTableData competition (getSecondCompetitor competition)
+    table scoreTableStyle
+        [ tr [] (makeScoreTableHeader competition)
+        , tr [] (makeScoreTableData competition (getFirstCompetitor competition))
+        , tr [] (makeScoreTableData competition (getSecondCompetitor competition))
         ]
 
-makeScoreTableHeader : Competition -> Html Msg
-makeScoreTableHeader competition = th [] (getLineScoreHeaders competition)
+makeScoreTableHeader : Competition -> List (Html Msg)
+makeScoreTableHeader competition =
+    List.map (\header -> th scoreTableStyle [text header]) (getLineScoreText (getFirstCompetitor competition))
 
-makeScoreTableData : Competition -> Competitor -> Html Msg
-makeScoreTableData competition competitor = th [] []
-
-makeProbabilityTable : Competition -> Html Msg
-makeProbabilityTable competition =
-    table []
-        [ makeProbabilityTableHeader competition
-        , makeProbabilityTableData competition
-        ]
-
-makeProbabilityTableHeader : Competition -> Html Msg
-makeProbabilityTableHeader competition =
-    th [] [i [] [text "P(win)"]]
-
-makeProbabilityTableData : Competition -> Html Msg
-makeProbabilityTableData competition = th [] []
-
-makeWatchabilityTable : Competition -> Html Msg
-makeWatchabilityTable competition =
-    table []
-        [ makeWatchabilityTableHeader competition
-        , makeWatchabilityTableData competition
-        ]
-
-makeWatchabilityTableHeader : Competition -> Html Msg
-makeWatchabilityTableHeader competition = th [] []
-
-makeWatchabilityTableData : Competition -> Html Msg
-makeWatchabilityTableData competition = th [] []
-
-
--- V BELOW IS DEPRECATED
-
-makeHeaderRow : Competition -> Html Msg
-makeHeaderRow competition =
-    tr [] (
-        [th [] [text competition.status.type_.shortDetail],
-        th [] []] ++
-        (getLineScoreHeaders competition) ++
-        [th [] [text "T"],
-        th [] [i [] [text "P(win)"]],
-        th [] [text "Watchability Score"]]
-    )
-
-getLineScoreHeaders : Competition -> List (Html Msg)
-getLineScoreHeaders competition =
-    List.map (\header -> th [] [text header]) (getLineScoreText (getFirstCompetitor competition))
-
-getLineScores : Competitor -> LineScores
-getLineScores competitor = Maybe.withDefault [] (competitor.linescores)
+makeScoreTableData : Competition -> Competitor -> List (Html Msg)
+makeScoreTableData competition competitor =
+    List.map (\score -> th scoreTableStyle [text (Debug.toString score)]) (Maybe.withDefault [] competitor.linescores)  
 
 getLineScoreText : Competitor -> List String
 getLineScoreText competitor =
     List.take (List.length (getLineScores competitor)) ["1", "2", "3", "4", "OT"]
 
-makeCompetitorRow : Competition -> Competitor -> Html Msg
-makeCompetitorRow competition competitor = 
-    tr [] (
-        [td [] [img [src competitor.team.logo, height 50, width 50] [], text competitor.team.abbreviation],
-        td [] []] ++
-        (getLineScoreData competitor) ++
-        [td [] [text (Debug.toString (getTotalScore competitor))],
-        td [] [text (getWinPercentageString competition competitor)],
-        td [] [text (Debug.toString (getWatchabilityScore competition))]]
-    )
+getLineScores : Competitor -> LineScores
+getLineScores competitor = Maybe.withDefault [] (competitor.linescores)
 
-getLineScoreData : Competitor -> List (Html Msg)
-getLineScoreData competitor =
-  List.map (\score -> th [] [text (Debug.toString score)]) (Maybe.withDefault [] competitor.linescores)
+makeProbabilityTable : Competition -> Html Msg
+makeProbabilityTable competition =
+    table []
+        [ tr [] [makeProbabilityTableHeader competition]
+        , tr [] [makeProbabilityTableData competition]
+        ]
 
--- ^ ABOVE IS DEPRECATED
+makeProbabilityTableHeader : Competition -> Html Msg
+makeProbabilityTableHeader competition =
+    th [foregroundColor] [i [] [text "P(win)"]]
+
+makeProbabilityTableData : Competition -> Html Msg
+makeProbabilityTableData competition =
+    let
+        homeWinPercentage = Maybe.withDefault 50 Nothing -- TODO
+        awayWinPercentage = Maybe.withDefault 50 Nothing -- TODO
+        tiePercentage = Maybe.withDefault 0 Nothing      -- TODO
+    in
+        svg
+            [viewBox "0 0 200 25", width 200, height 25]
+            [ rect [x "0", y "0", width 200, height 25, fill foregroundColorHexString, rx "15", ry "15"] []
+            , rect [x "0", y "0", width 200, height 25, fill foregroundColorHexString, rx "15", ry "15"] []
+            ]
+
+makeWatchabilityTable : Competition -> Html Msg
+makeWatchabilityTable competition =
+    table []
+        [ tr [] [makeWatchabilityTableHeader competition]
+        , tr [] [makeWatchabilityTableData competition]
+        ]
+
+makeWatchabilityTableHeader : Competition -> Html Msg
+makeWatchabilityTableHeader competition =
+    th [foregroundColor] [text "Watchability Score"]
+
+makeWatchabilityTableData : Competition -> Html Msg
+makeWatchabilityTableData competition =
+    th [foregroundColor] [text (Debug.toString (getWatchabilityScore competition))]
+
 
 -- VIEW/STYLE
 
 tableStyle : List (Html.Attribute Msg)
 tableStyle = 
-    [ style "border" ("1px solid " ++ tableBorderColor)
+    [ style "border" ("1px solid " ++ foregroundColorHexString)
+    , style "border-radius" "5px"
     , style "width" "800px"
+    , monospace
+    , backgroundColor
+    , padding 5
     ]
 
-tableBorderColor : String
-tableBorderColor = "#dddddd"
+monospace : Html.Attribute Msg
+monospace = style "font-family" "Consolas, monaco, monospace"
+
+padding : Int -> Html.Attribute Msg
+padding px = style "padding" ((String.fromInt px) ++ "px")
+
+foregroundColor : Html.Attribute Msg
+foregroundColor = style "color" foregroundColorHexString
+
+errorTextColor : Html.Attribute Msg
+errorTextColor = style "color" errorTextColorHexString
+
+secondaryBackground : Html.Attribute Msg
+secondaryBackground = style "background-color" foregroundColorHexString
+
+backgroundColor : Html.Attribute Msg
+backgroundColor = style "background-color" backgroundColorHexString
+
+backgroundColorBorder : List (Html.Attribute Msg)
+backgroundColorBorder =
+    [ style "border" ("2px solid " ++ backgroundColorHexString)
+    , style "border-radius" "5px"
+    ]
+
+pageBackground : List (Html.Attribute Msg)
+pageBackground =
+    [ style "padding" "0"
+    , style "margin" "0"
+    , style "top" "0"
+    , style "left" "0"
+    , backgroundColor
+    ]
+
+scoreTableStyle : List (Html.Attribute Msg)
+scoreTableStyle =
+    [ style "width" "25px"
+    , style "height" "25px"
+    , style "border" ("1px solid " ++ foregroundColorHexString)
+    , style "border-radius" "5px"
+    , style "border-collapse" "collapse"
+    , foregroundColor
+    ]
+
+errorDivStyle : List (Html.Attribute Msg)
+errorDivStyle =
+    [ padding 12 ]
+
+errorTextStyle : List (Html.Attribute Msg)
+errorTextStyle =
+    [errorTextColor]
+
+-- VIEW/STYLE/COLOR
+
+foregroundColorHexString : String
+foregroundColorHexString = "#f8f8f8"
+
+backgroundColorHexString : String
+backgroundColorHexString = "#2a2a2a"
+
+errorTextColorHexString : String
+errorTextColorHexString = "#ff7f7f"
