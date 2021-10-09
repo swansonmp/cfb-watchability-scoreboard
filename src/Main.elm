@@ -231,8 +231,8 @@ second xs = head (drop 1 xs)
 init : () -> (Model, Cmd Msg)
 init _ =
     let
-        url = "http://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
-        --url = "./broken-scoreboard.json"
+        url = "https://site.api.espn.com/apis/site/v2/sports/football/college-football/scoreboard"
+        --url = "./../assets/scoreboard.json"
     in
         ( Loading
         , Http.get
